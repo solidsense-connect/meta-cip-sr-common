@@ -1,0 +1,5 @@
+#!/bin/sh
+
+cd /flash
+/flash/write-firmware --boot
+/flash/write-u-boot

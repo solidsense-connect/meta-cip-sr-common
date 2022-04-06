@@ -1,0 +1,545 @@
+#!/bin/bash
+
+# Commands
+DATE="$(command -vp date)"
+
+# Global variables
+PROG_NAME="$(basename "${0}")"
+HARDWARE_ALL=" \
+	in6gq \
+	in6gsdl \
+	n6gq \
+	n6gsdl \
+"
+IMAGE_SUFFIX=" \
+	manifest \
+	mender \
+	mender.bmap \
+	tar.gz \
+"
+CONFIG_FILE="meta-cip-sr-common/scripts/build.conf"
+KAS_DOCKER="meta-cip-sr-common/scripts/kas-docker"
+DOCKER_ENABLE=0
+ARTIFACT_VERIFY_KEY="meta-cip-sr-common/mender-cert/artifact-verify-key.pem"
+CLEANMETA=""
+CLEANMETALIST=" \
+	meta-debian \
+	meta-java \
+	meta-iot-cloud \
+	meta-mender \
+	meta-openembedded \
+	meta-readonly-rootfs-overlay \
+	meta-virtualization \
+	poky \
+"
+USBIMAGE=""
+USBIMAGE_RUN=""
+
+# initialize configuration array
+declare -A config
+config=(
+	[devices]="imx8mnc in6gq in6gsdl n6gq n6gsdl solidsense"
+	[product]=Solidsense
+	[release]=dev
+	[date]=$("${DATE}" "+%Y%m%d")
+	[iteration]=00
+	[variant]=""
+	[mender_artifact]=~/solidsense-connect/bin/mender-artifact
+	[mender_private_key_file]=~/solidsense-connect/signing-private-keys/private.key
+	[mender_public_key_file]=~/solidsense-connect/signing-private-keys/public.key
+	[mender_server_url]=https://mender.solidsense.io
+)
+
+# Pretty print
+NC="\\e[0m"
+BOLD="\\e[1m"
+#BLINK="\\e[5m"
+UNDERLINED="\\e[4m"
+RED="\\e[31m"
+YELLOW="\\e[33m"
+LIGHT_RED="\\e[91m"
+LIGHT_GREEN="\\e[92m"
+
+# functions
+usage () {
+	echo "${PROG_NAME}:"
+	echo "    -H|--hardware <hardware type>                 :default is <all>"
+	echo "    -p|--product <product>                        :default is <${config[product]}>"
+	echo "    -r|--release <release version>                :default is <${config[release]}>"
+	echo "    -d|--date <date>                              :default is <${config[date]}>"
+	echo "    -D|--docker                                   :default is to not use docker"
+	echo "    -i|--iteration <iteration>                    :default is <${config[iteration]}>"
+	echo "    -v|--variant <variant>                        :default is no specific variant"
+	echo "    -c|--config <config>                          :default is <${CONFIG_FILE}>"
+	echo "    -C|--clean-meta                               :default is to not remove extra meta-* directories"
+	echo "    -u|--usb-image                                :default is to not build bootable usb/sd images to flash eMMC"
+	echo "                                                   This option will enforce building of all images"
+	echo "    -h|--help"
+	echo ""
+	exit 1
+}
+
+read_config_file () {
+	if [ ! -f "${CONFIG_FILE}" ]; then
+		echo "Config file <${CONFIG_FILE}> not found!"
+		exit 1
+	fi
+	while read -r line ; do
+		if echo "${line}" | grep -F = &>/dev/null; then
+			varname=$(echo "${line}" | cut -d '=' -f 1)
+			config[$varname]=$(echo "${line}" | cut -d '=' -f 2-)
+		fi
+	done < "${CONFIG_FILE}"
+}
+
+override_config_file_values () {
+	if [ -n "${DEVICES}" ]; then
+		config[devices]="${DEVICES}"
+	fi
+	if [ -n "${PRODUCT}" ]; then
+		config[product]="${PRODUCT}"
+	fi
+	if [ -n "${RELEASE}" ]; then
+		config[release]="${RELEASE}"
+	fi
+	if [ -n "${RELEASE_DATE}" ]; then
+		config[date]="${RELEASE_DATE}"
+	fi
+	if [ -n "${ITERATION}" ]; then
+		config[iteration]="${ITERATION}"
+	fi
+	if [ -n "${VARIANT}" ]; then
+		config[variant]="${VARIANT}"
+	fi
+}
+
+find_variant () {
+	variant="${1}"
+	case "${variant}" in
+		certification )
+			echo "Z"
+			;;
+		maersk )
+			echo "M"
+			;;
+		test )
+			echo "T"
+			;;
+		[[:alpha:]]* )
+			echo "${variant}" | cut --bytes=1 | tr '[:lower:]' '[:upper:]'
+			;;
+		* )
+			echo ""
+			;;
+	esac
+}
+
+calc_duration () {
+	time_start="${1}"
+	time_end="${2}"
+
+	echo $((time_end-time_start)) | awk '{printf("%02d:%02d:%02d\n", int($1/3600), int($1/60%60), int($1%60))}'
+}
+
+do_build () {
+	# Remove the ~/.m2 cache directory this can occasionally cause issues with building kura.
+	if [ -d "${HOME}/.m2" ]; then
+		rm -rf "${HOME}/.m2"
+	fi
+	# Create log directory
+	if [ ! -d "deploy/logs/${VERSION}" ]; then
+		mkdir -p "deploy/logs/${VERSION}"
+	fi
+	printf "\\nBuilding version ${LIGHT_GREEN}%s${NC}\\n" "${VERSION}"
+	for device in ${config[devices]}; do
+		START="$(${DATE} +%s)"
+		log="deploy/logs/${VERSION}/build-${device}-$(${DATE} +%Y%m%d-%H:%M)"
+		# determine variant
+		if [ -n "${VARIANT}" ]; then
+			if [ "${VARIANT}" = "test" ]; then
+				main_yml="kas-solidsense.yml"
+			else
+				main_yml="kas-solidsense-${VARIANT}.yml"
+			fi
+		else
+			main_yml="kas-solidsense.yml"
+		fi
+		if [ ! -f "${main_yml}" ]; then
+			printf "\\nError file <%s> not found!\\n" "${main_yml}"
+			exit 1
+		fi
+		# check if device yaml exists
+		device_yml="meta-cip-sr-${device}/kas-${device}.yml"
+		if [ ! -f "${device_yml}" ]; then
+			printf "\\nError file <%s> not found!\\n" "${device_yml}"
+			exit 1
+		fi
+		if [ ${DOCKER_ENABLE} -eq 1 ]; then
+			# Build using KAS wrapper by kas-docker script
+			printf "    MENDER_ARTIFACT_NAME=%s MENDER_SERVER_URL=%s %s build %s:%s\\n" \
+				"${VERSION}" "${config[mender_server_url]}" "${KAS_DOCKER}" "${main_yml}" "${device_yml}"
+			printf "        ${LIGHT_RED}%s${NC} logging to ${BOLD}%s${NC}" \
+				"${device}" \
+				"${log}"
+			MENDER_ARTIFACT_NAME="${VERSION}" MENDER_SERVER_URL="${config[mender_server_url]}" \
+				${KAS_DOCKER} build "${main_yml}":"${device_yml}" > "${log}" 2>&1
+			ret="${?}"
+		else
+			# Build using KAS
+			printf "    MENDER_ARTIFACT_NAME=%s MENDER_SERVER_URL=%s kas build %s:%s\\n" \
+				"${VERSION}" "${config[mender_server_url]}" "${main_yml}" "${device_yml}"
+			printf "        ${LIGHT_RED}%s${NC} logging to ${BOLD}%s${NC}" \
+				"${device}" \
+				"${log}"
+			MENDER_ARTIFACT_NAME="${VERSION}" MENDER_SERVER_URL="${config[mender_server_url]}" \
+				~/.local/bin/kas build "${main_yml}":"${device_yml}" > "${log}" 2>&1
+			ret="${?}"
+		fi
+		END="$(${DATE} +%s)"
+		duration="$(calc_duration "${START}" "${END}")"
+		if [ "${ret}" -eq "1" ] ; then
+			printf " ${YELLOW}(%s)${NC} Error!: (%s)\\n" "${duration}" "${ret}"
+			exit 1
+		else
+			printf " ${YELLOW}(%s)${NC}\\n" "${duration}"
+		fi
+		printf "\\n"
+	done
+}
+
+do_update_manifest () {
+	MANIFEST_FILE="${1}"
+	LICENSE_DIR="${2}"
+
+	while read -r pkg rest ; do
+		case "${pkg}" in
+			kernel-* )
+					echo "${pkg} ${rest} <GPL>"
+				;;
+			*-dev )
+				#license_pkg="$(echo "$pkg" | sed 's/-dev//')"
+				license_pkg="${pkg//-dev//}"
+				if [ -d "${LICENSE_DIR}/${license_pkg}" ] ; then
+					RECIPE_INFO="${LICENSE_DIR}/${license_pkg}/recipeinfo"
+					license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+					echo "${pkg} ${rest} <${license}>"
+				else
+					echo "${pkg} ${rest} UNKNOWN"
+				fi
+				;;
+			*-*-* )
+				if [ -d "${LICENSE_DIR}/${pkg}" ] ; then
+					RECIPE_INFO="${LICENSE_DIR}/${pkg}/recipeinfo"
+					license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+					echo "${pkg} ${rest} <${license}>"
+				else
+					license_pkg="$(echo "${pkg}" | awk '{gsub("-", " "); print $1"-"$2}')"
+					if [ -d "${LICENSE_DIR}/${license_pkg}" ] ; then
+						RECIPE_INFO="${LICENSE_DIR}/${license_pkg}/recipeinfo"
+						license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+						echo "${pkg} ${rest} <${license}>"
+					else
+						license_pkg="$(echo "${pkg}" | awk '{gsub("-", " "); print $1}')"
+						if [ -d "${LICENSE_DIR}/${license_pkg}" ] ; then
+							RECIPE_INFO="${LICENSE_DIR}/${license_pkg}/recipeinfo"
+							license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+							echo "${pkg} ${rest} <${license}>"
+						else
+							echo "${pkg} ${rest} UNKNOWN"
+						fi
+					fi
+				fi
+				;;
+			*-* )
+				if [ -d "${LICENSE_DIR}/${pkg}" ] ; then
+					RECIPE_INFO="${LICENSE_DIR}/${pkg}/recipeinfo"
+					license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+					echo "${pkg} ${rest} <${license}>"
+				else
+					license_pkg="$(echo "${pkg}" | awk '{gsub("-", " "); print $1}')"
+					if [ -d "${LICENSE_DIR}/${license_pkg}" ] ; then
+						RECIPE_INFO="${LICENSE_DIR}/${license_pkg}/recipeinfo"
+						license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+						echo "${pkg} ${rest} <${license}>"
+					else
+						echo "${pkg} ${rest} UNKNOWN"
+					fi
+				fi
+				;;
+			* )
+				if [ -d "${LICENSE_DIR}/${pkg}" ] ; then
+					RECIPE_INFO="${LICENSE_DIR}/${pkg}/recipeinfo"
+					license="$(awk '/LICENSE/ {gsub("LICENSE: ", ""); print}' < "${RECIPE_INFO}")"
+					echo "${pkg} ${rest} <${license}>"
+				else
+					echo "${pkg} ${rest} UNKNOWN"
+				fi
+				;;
+		esac
+	done < "${MANIFEST_FILE}"
+}
+
+do_deploy_images () {
+	dir_deploy="deploy/${VERSION}"
+
+	if [ ! -d "${dir_deploy}" ]; then
+		mkdir -p "${dir_deploy}"
+	fi
+
+	printf "Copying over images for${LIGHT_RED}%s${NC}\\n"
+
+	# Copy over the licenses
+	if [ -z ${USBIMAGE_RUN} ]; then
+		START="$(${DATE} +%s)"
+		printf "    ${RED}%s${NC}" "licenses"
+		rsync -avz build/tmp/deploy/licenses "${dir_deploy}" > /dev/null 2>&1
+		CWD="$(pwd)"
+		cd "${dir_deploy}" || exit
+		zip -9 -r "${VERSION}-licenses.zip" "licenses" > /dev/null 2>&1
+		cd "${CWD}" || exit
+		END="$(${DATE} +%s)"
+		duration="$(calc_duration "${START}" "${END}")"
+		printf " ${YELLOW}(%s)${NC}\\n" "${duration}"
+	fi
+
+	for device in ${config[devices]}; do
+		image_prefix_src="build/tmp/deploy/images/${device}/core-image-minimal-${device}"
+		image_prefix_dst="${dir_deploy}/${device}-core-image-minimal-${VERSION}"
+
+		if [ ! -d "${dir_deploy}" ]; then
+			mkdir -p "${dir_deploy}"
+		fi
+
+		# Copy over images
+		printf "    ${RED}%s${NC}" "${device}"
+		START="$(${DATE} +%s)"
+		for suffix in ${IMAGE_SUFFIX}; do
+			if [ -f "${image_prefix_src}.${suffix}" ]; then
+				cp "${image_prefix_src}.${suffix}" "${image_prefix_dst}.${suffix}"
+			else
+				printf "\\n\\n${RED}Error: ${NC} <%s> not found!\\n" "${image_prefix_src}.${suffix}"
+				exit 1
+			fi
+		done
+
+		# Copy over DTB files
+		if [ -z "${USBIMAGE_RUN}" ] ; then
+			files="$(find build/tmp/deploy/images/"${device}" -iname \*git\*dtb -print | sed 's/--.*dtb/.dtb/')"
+			for file in ${files} ; do
+				if [ -f "${file}" ]; then
+					cp "${file}" "${dir_deploy}/$(basename "${file}")"
+				else
+					printf "\\n\\n${RED}Error: ${NC} <%s> not found!\\n" "${file}"
+					exit 1
+				fi
+			done
+		fi
+
+		if [ -n "${USBIMAGE_RUN}" ]; then
+			src="build/tmp/deploy/images/${device}/extlinux.conf"
+			dst="${dir_deploy}/extlinux.conf"
+			if [ -f "${src}" ]; then
+				cp "${src}" "${dst}"
+			else
+				printf "\\n\\n${RED}Error: ${NC} <%s> not found!\\n" "${src}"
+				exit 1
+			fi
+		fi
+
+		# Update manifest file
+		do_update_manifest "${image_prefix_src}.manifest" "${dir_deploy}/licenses" > "${image_prefix_dst}.manifest.lic"
+
+		END="$(${DATE} +%s)"
+		duration="$(calc_duration "${START}" "${END}")"
+		printf " ${YELLOW}(%s)${NC}\\n" "${duration}"
+	done
+
+	printf "\\n"
+}
+
+do_deploy_sign_artifact () {
+	local do_return=0
+
+	if [ ! -f "${config[mender_private_key_file]}" ]; then
+		printf "\\nUnable to find mender private key file: ${RED}%s${NC}\\n" "${config[mender_private_key_file]}"
+		do_return=1
+	fi
+	if [ ! -f "${config[mender_public_key_file]}" ]; then
+		printf "\\nUnable to find mender public key file: ${RED}%s${NC}\\n" "${config[mender_public_key_file]}"
+		do_return=1
+	fi
+	if [ ! -f "${config[mender_artifact]}" ]; then
+		printf "\\nUnable to find mender artifact: ${RED}%s${NC}\\n" "${config[mender_artifact]}"
+		do_return=1
+	fi
+	if [ ${do_return} -eq 1 ]; then
+		printf "\\nUnable to sign artifacts!\\n"
+		return
+	fi
+
+	if [ ! -d "deploy/${VERSION}" ]; then
+		mkdir -p "deploy/${VERSION}"
+	fi
+
+	printf "Signing and verifying artifact for${LIGHT_RED}%s${NC}\\n"
+	for device in ${config[devices]}; do
+		dir_deploy="deploy/${VERSION}"
+		mender_artifact="${dir_deploy}/${device}-core-image-minimal-${VERSION}.mender"
+
+		if [ ! -d "${dir_deploy}" ]; then
+			mkdir -p "${dir_deploy}"
+		fi
+
+		# Keep an unsigned artifact
+		cp "${mender_artifact}" "${mender_artifact}.unsigned"
+
+		# Sign and verify artifacts
+		printf "    ${RED}%s${NC}" "${device}"
+		START="$(${DATE} +%s)"
+		${config[mender_artifact]} sign --key "${config[mender_private_key_file]}" "${mender_artifact}"
+		${config[mender_artifact]} validate --key "${config[mender_public_key_file]}" "${mender_artifact}" > /dev/null 2>&1
+		END="$(${DATE} +%s)"
+		duration="$(calc_duration "${START}" "${END}")"
+		printf " ${YELLOW}(%s)${NC}\\n" "${duration}"
+	done
+}
+
+do_cleanmeta () {
+	printf "Removing the following extra layers...\\n    "
+	for meta in ${CLEANMETALIST} ; do
+		printf "%s " "${meta}"
+		rm -rf "${meta}"
+	done
+	printf "\\n"
+}
+
+do_create_usb_image () {
+	printf "Creating USB Image.\\n"
+	cd deploy || exit
+	../meta-cip-sr-common/scripts/create-usb-image --hardware n6g "${VERSION}"
+	printf "Compressing %s.\\n" "<${VERSION}-n6g.img>"
+	if [ -f "${VERSION}-n6g.img.xz" ] ; then
+		rm "${VERSION}-n6g.img"
+	fi
+	xz -9 --extreme --threads=0 --keep "${VERSION}-n6g.img"
+	../meta-cip-sr-common/scripts/create-usb-image --hardware in6g "${VERSION}"
+	printf "Compressing %s.\\n" "<${VERSION}-in6g.img>"
+	if [ -f "${VERSION}-in6g.img.xz" ] ; then
+		rm "${VERSION}-in6g.img"
+	fi
+	xz -9 --extreme --threads=0 --keep "${VERSION}-in6g.img"
+}
+
+# main
+
+options=$(getopt -l "help,hardware:,product:,release:,date:,docker,iteration:,variant:,config:,clean-meta,usb-image" -o "hH:p:r:d:Di:v:c:Cu" -- "${@}")
+eval set -- "${options}"
+
+while true
+do
+	case "${1}" in
+		-h|--help )
+			usage
+			;;
+		-H|--hardware )
+			shift
+			if [ "${1}" = "all" ]; then
+				DEVICES="${HARDWARE_ALL}"
+			else
+				DEVICES="${1//,/' '}"
+			fi
+			;;
+		-p|--product )
+			shift
+			PRODUCT="${1}"
+			;;
+		-r|--release )
+			shift
+			RELEASE="${1}"
+			;;
+		-d|--date )
+			shift
+			RELEASE_DATE="${1}"
+			;;
+		-D|--docker )
+			DOCKER_ENABLE=1
+			;;
+		-i|--iteration )
+			shift
+			ITERATION="$(printf "%02d" "$(( 10#${1}))")"
+			;;
+		-v|--variant )
+			shift
+			VARIANT="${1}"
+			VARIANT_VER="$(find_variant "${1}")"
+			;;
+		-c|--config )
+			CONFIG_FILE="${1}"
+			;;
+		-C|--clean-meta )
+			CLEANMETA=1
+			;;
+		-u|--usb-image )
+			DEVICES="${HARDWARE_ALL}"
+			USBIMAGE=1
+			;;
+		\? )
+			usage
+			;;
+		: )
+			echo "Invalid option: ${OPTARG} requires an argument" 1>&2
+			;;
+		-- )
+			shift
+			break
+			;;
+		* )
+			usage
+			;;
+	esac
+	shift
+done
+
+# Read in the config file
+read_config_file
+
+# Override config file values with option values
+override_config_file_values
+
+if [ "${#}" -ne "0" ]; then
+	usage
+else
+	if [ ! -d "meta-cip-sr-common" ]; then
+		printf "\\nCannot find meta-cip-sr-common\\n\\n"
+		exit 1
+	fi
+	if [ ! -f "${ARTIFACT_VERIFY_KEY}" ]; then
+		printf "\\nUnable to continue cannot find ${RED}%s${NC}\\n\\n" "${ARTIFACT_VERIFY_KEY}"
+		exit 1
+	fi
+	FULL_START="$(${DATE} +%s)"
+	if [ -n "${VARIANT_VER}" ]; then
+		VERSION="${config[product]}-${VARIANT_VER}${config[release]}-${config[date]}${config[iteration]}"
+	else
+		VERSION="${config[product]}-${config[release]}-${config[date]}${config[iteration]}"
+	fi
+	if [ ${CLEANMETA} ]; then
+		do_cleanmeta
+	fi
+	do_build
+	do_deploy_images
+	do_deploy_sign_artifact
+	if [ ${USBIMAGE} ] ; then
+		printf "\\nBuilding the WIC for the USB Images.\\n"
+		config[devices]="in6gsdl n6gsdl"
+		VARIANT="usb-image"
+		IMAGE_SUFFIX="wic"
+		USBIMAGE_RUN=1
+		do_build
+		do_deploy_images
+		do_create_usb_image
+	fi
+	FULL_END="$(${DATE} +%s)"
+	duration="$(calc_duration "${FULL_START}" "${FULL_END}")"
+	printf "\\nThat entire run took ${BOLD}${UNDERLINED}%s${NC}.\\n\\n" "${duration}"
+fi
