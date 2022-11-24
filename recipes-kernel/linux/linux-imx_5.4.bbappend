@@ -19,6 +19,11 @@ SRC_URI += " \
 	${GITHUB_RAW_URL}/0015-Imx8mn-Wifi-firmware-load-time.patch;name=0015 \
 	${GITHUB_RAW_URL}/0016-Imx8mn-RS485-fix-change-UART3-to-DTE-mode.patch;name=0016 \
 	${GITHUB_RAW_URL}/0017-Edit-pad-control-registers-of-the-WIFI-signals.patch;name=0017 \
+	${GITHUB_RAW_URL}/0018-arm64-dts-imx8mn-compact-add-bluetooth-device-node.patch;name=0018 \
+	${GITHUB_RAW_URL}/0019-rtc-abx80x-add-support-for-am1805.patch;name=0019 \
+	${GITHUB_RAW_URL}/0020-arm64-dts-imx8mn-compact-change-rtc-compatible-strin.patch;name=0020 \
+	${GITHUB_RAW_URL}/0021-Edit-imx8mn-compact-dts-Add-ADIN_PHY-support-aphy-dd.patch;name=0021 \
+	${GITHUB_RAW_URL}/0021-arm64-dts-imx8mn-compact-add-sensors.patch;name=0021-2 \
 	file://0001-remove-ublox-reset.patch \
 "
 
@@ -39,3 +44,8 @@ SRC_URI[0014.sha256sum] = "5813f8c8784654e36526a5c6fb947f76f04ff178a57e7a3a33e7d
 SRC_URI[0015.sha256sum] = "99830c574c04bd7bf9b0588b064a7146a96b93b90d700befb9e146dd555b9a63"
 SRC_URI[0016.sha256sum] = "5775bd566d0a481034ee0321e4670809c2f9e169eedce806a6cb80ef946bca1d"
 SRC_URI[0017.sha256sum] = "cdb4570b20f5f0c4e264214c84367959ac0785edbebad367dfa56b12a51a9e24"
+SRC_URI[0018.sha256sum] = "876aad72e7f56177cebd018b1ff9be0d7418a6031e5ff7d3144d1fe32c908319"
+SRC_URI[0019.sha256sum] = "2f327d932d938d192209c5a7fcc612eacd133e3a06f5b95984a6306add0b56c5"
+SRC_URI[0020.sha256sum] = "811fb1cc7d29be342f739b50a605445bbddfee9f016883650e2f3433626b844d"
+SRC_URI[0021.sha256sum] = "ee01b040c32f08841a784b9a5c935a7ab7cfb25c091526f5f7ec97d0fc54f2f4"
+SRC_URI[0021-2.sha256sum] = "846c083175202b7f4f49215c82a528e691ceeb3e09aeb28999998ae289372aec"
