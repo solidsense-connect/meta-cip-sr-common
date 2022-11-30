@@ -3,15 +3,18 @@
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 SRC_URI += " \
-    file://001-default.config \
-    file://002-rtc.config \
-    file://0001-update-dts-for-solidsense.patch \
-    file://0003-add-am1805-rtc-driver.patch \
-    file://0004-add-ltc4162_l_charger.patch \
-    file://0005-power-supply-ltc4162_l-constify-static-struct-attribute_group.patch \
-    file://0006-dt_bindings-power-supply-add-ltc4162_l_charger.patch \
-    file://0007-fb-mxc-move-hdmi_enable_overflow_interrupts.patch \
-    file://rtc-am1805.c \
+	file://001-default.config \
+	file://002-rtc.config \
+	file://0001-update-dts-for-solidsense.patch \
+	file://0003-add-am1805-rtc-driver.patch \
+	file://0004-add-ltc4162_l_charger.patch \
+	file://0005-power-supply-ltc4162_l-constify-static-struct-attribute_group.patch \
+	file://0006-dt_bindings-power-supply-add-ltc4162_l_charger.patch \
+	file://0007-fb-mxc-move-hdmi_enable_overflow_interrupts.patch \
+	file://rtc-am1805.c \
+	file://0008-dt-bindings-net-adin-document-phy-clock-output-prope.patch \
+	file://0009-net-phy-adin-add-support-for-clock-output.patch \
+	file://0010-ARM-dts-imx6qdl-sr-som-update-phy-configuration-for-.patch \
 "
 
 LIC_FILES_CHKSUM = "file://COPYING;md5=bbea815ee2795b2f4230826c0c6b8814"
