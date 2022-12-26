@@ -5,6 +5,7 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 SRC_URI += " \
 	file://001-default.config \
 	file://002-rtc.config \
+	file://003-adin-phy.config \
 	file://0001-update-dts-for-solidsense.patch \
 	file://0003-add-am1805-rtc-driver.patch \
 	file://0004-add-ltc4162_l_charger.patch \
