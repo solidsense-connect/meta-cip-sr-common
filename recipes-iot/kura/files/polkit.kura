@@ -5,4 +5,8 @@ polkit.addRule(function(action, subject) {
         action.lookup(\"unit\") == \"bluetooth.service\")) {
         return polkit.Result.YES;
     }
+    if (action.id == \"org.freedesktop.systemd1.manage-unit-files\" &&
+        subject.user == \"kurad\") {
+        return polkit.Result.YES;
+    }
 });
